@@ -7,6 +7,19 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// serve static files
+const publicDir = path.join(__dirname, "public");
+app.use(express.static(publicDir));
+
+// serve index.html at "/"
+app.get("/", (req, res) => {
+  res.sendFile(path.join(publicDir, "index.html"));
+});
+
+// (optional but nice for Render)
+app.get("/healthz", (req, res) => res.status(200).send("ok"));
+
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
