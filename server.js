@@ -26,11 +26,11 @@ const GAME = {
   MAP_SIZE: 800,
   PLAYER_RADIUS: 16,
   DEFAULT_SPEED: 360,   // px/s
-  TICK_HZ: 30,          // server tick rate
+  TICK_HZ: 60,          // server tick rate
   SPAWNS: [
-    { x: 120, y: 120 },
-    { x: 680, y: 120 },
-    { x: 400, y: 680 }
+    { x: 400, y: 400 },
+    { x: 400, y: 400 },
+    { x: 400, y: 400 }
   ]
 };
 
