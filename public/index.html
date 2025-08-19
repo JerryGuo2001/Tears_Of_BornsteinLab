@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Top-Down 3-Player Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height:100%; margin:0; background:#0b1020; color:#e5e7eb; font-family:system-ui,sans-serif; }
+    #wrap { display:flex; align-items:center; justify-content:center; height:100%; gap:16px; flex-direction:column; }
+    #hud { display:flex; gap:12px; align-items:center; }
+    #status { opacity:.8 }
+    /* Let JS control sizing for HiDPI crispness */
+    canvas {
+      background:#0f172a; border:2px solid #334155; border-radius:12px;
+      box-shadow:0 10px 30px rgba(0,0,0,.25); display:block;
+    }
+    .pill { padding:4px 10px; border-radius:999px; background:#111827; border:1px solid #374151; }
+
+    /* Start overlay */
+    #overlay { position:fixed; inset:0; background:rgba(2,6,23,.9); display:flex; align-items:center; justify-content:center; }
+    #panel { background:#0f172a; border:1px solid #334155; border-radius:12px; padding:20px; min-width:320px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+    #panel h2 { margin:0 0 12px 0; font-weight:600; }
+    #startBtn { margin-top:12px; width:100%; padding:10px; border-radius:10px; background:#2563eb; border:0; color:white; font-weight:600; cursor:pointer; }
+    #startBtn:hover { filter:brightness(1.1); }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <div class="pill">WASD or Arrow Keys</div>
+      <div id="status" class="pill">Connecting…</div>
+    </div>
+    <canvas id="game" width="800" height="800"></canvas>
+  </div>
+
+  <!-- Start overlay: single button (no speed/spawn inputs) -->
+  <div id="overlay">
+    <div id="panel">
+      <h2>Ready?</h2>
+      <button id="startBtn">Start &amp; Fullscreen</button>
+    </div>
+  </div>
+
+  <!-- Socket.IO client from the server -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Game logic -->
+  <script type="module" src="./game.js"></script>
+</body>
+</html>
