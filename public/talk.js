@@ -1,15 +1,16 @@
 // public/talk.js
-export function createTalkSystem() {
-  const state = {
-    open: false,
-    localId: null,
-    bubbles: [],             // { id, text, t, ttl }
-    sendSay: (text)=>{},     // injected by game.js
-  };
+// Self-registering Talk plugin: press Y to open, 1/2 to speak.
+// Uses server "say" event; shows bubbles for all players.
 
-  // ---------- UI ----------
-  let panel;
-  function mountUI() {
+(function waitForCore(){
+  if (window.GameCore?.socket) { init(window.GameCore); }
+  else setTimeout(waitForCore, 30);
+})();
+
+function init(core){
+  // ---- UI panel (left side) ----
+  let open = false, panel = null;
+  function mountUI(){
     if (panel) return;
     const style = document.createElement("style");
     style.textContent = `
@@ -26,7 +27,6 @@ export function createTalkSystem() {
       .talk-hint { opacity: .75; font-size: 12px; margin-top: 4px; }
     `;
     document.head.appendChild(style);
-
     panel = document.createElement("div");
     panel.className = "talk-panel";
     panel.innerHTML = `
@@ -37,82 +37,80 @@ export function createTalkSystem() {
     `;
     document.body.appendChild(panel);
   }
-  const showPanel = () => { if (panel) panel.style.display = "block"; };
-  const hidePanel = () => { if (panel) panel.style.display = "none"; };
+  mountUI();
 
-  // ---------- API ----------
-  function setLocalId(id) { state.localId = id; }
-  function bindNetwork({ sendSay }) { state.sendSay = sendSay || state.sendSay; }
+  const bubbles = []; // { id, text, t, ttl }
 
-  function toggle() { state.open = !state.open; state.open ? showPanel() : hidePanel(); }
-  function close()  { state.open = false; hidePanel(); }
+  function toggle(){ open = !open; panel.style.display = open ? "block" : "none"; }
+  function close(){ open = false; panel.style.display = "none"; }
 
-  function handleKeyDown(e) {
+  // Keyboard
+  core.onKeyDown((e)=>{
     if (e.key === "y" || e.key === "Y") { toggle(); e.preventDefault(); return true; }
-    if (!state.open) return false;
-    if (e.key === "1") { state.sendSay("Hi"); close(); e.preventDefault(); return true; }
-    if (e.key === "2") { state.sendSay("Jerry is the best"); close(); e.preventDefault(); return true; }
-    return false;
-  }
+    if (!open) return;
+    if (e.key === "1") { core.say("Hi"); close(); e.preventDefault(); return true; }
+    if (e.key === "2") { core.say("Jerry is the best"); close(); e.preventDefault(); return true; }
+  });
 
-  // When the server broadcasts a say
-  function receiveSay(id, text) {
-    state.bubbles.push({ id, text, t: 0, ttl: 2.4 });
-  }
+  // Incoming from server
+  core.socket.on("say", ({ id, text }) => { bubbles.push({ id, text, t:0, ttl:2.4 }); });
 
-  function update(dt) {
-    for (const b of state.bubbles) b.t += dt;
-    state.bubbles = state.bubbles.filter(b => b.t < b.ttl);
-  }
+  // Update (fade + lifetime)
+  core.onFrame((dt)=>{
+    for (const b of bubbles) b.t += dt;
+    for (let i=bubbles.length-1; i>=0; i--) if (bubbles[i].t >= bubbles[i].ttl) bubbles.splice(i,1);
+  });
 
-  function clearBubblesFor(id) {
-    state.bubbles = state.bubbles.filter(b => b.id !== id);
-  }
+  // Draw bubbles on top
+  core.onDraw((ctx, core)=>{
+    const pos = core.positions;
+    const { scale, dpr } = core.measure();
+    const PR = core.playerRadius;
 
-  function drawBubbles(ctx, positions, playerRadius, scale, dpr) {
-    for (const b of state.bubbles) {
-      const pos = positions[b.id]; if (!pos) continue;
+    for (const b of bubbles) {
+      const p = pos[b.id]; if (!p) continue;
 
-      const headY = pos.y - playerRadius - 8 / (scale * dpr);
+      const headY = p.y - PR - 8 / (scale * dpr);
       const padding = 8 / (scale * dpr);
       const corner  = 8 / (scale * dpr);
       const fontPx  = 14 / (scale * dpr);
 
       ctx.save();
       ctx.font = `${fontPx}px system-ui, sans-serif`;
-      const textW   = ctx.measureText(b.text).width;
-      const boxW    = Math.max(textW + padding * 2, 50 / (scale * dpr));
-      const boxH    = (fontPx + padding * 2);
-      const x = pos.x - boxW / 2;
+      const textW = ctx.measureText(b.text).width;
+      const boxW  = Math.max(textW + padding*2, 50 / (scale*dpr));
+      const boxH  = (fontPx + padding*2);
+      const x = p.x - boxW/2;
       const y = headY - boxH - 10 / (scale * dpr);
 
-      let alpha = 1.0;
+      let alpha = 1;
       const fadeStart = b.ttl - 0.5;
       if (b.t > fadeStart) alpha = Math.max(0, 1 - (b.t - fadeStart) / 0.5);
-
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = "rgba(17,24,39,0.92)";
-      roundRect(ctx, x, y, boxW, boxH, corner); ctx.fill();
-      ctx.strokeStyle = "rgba(51,65,85,1)";
-      ctx.lineWidth = 2 / (scale * dpr);
-      roundRect(ctx, x, y, boxW, boxH, corner); ctx.stroke();
 
-      const tailW = 12 / (scale * dpr), tailH = 10 / (scale * dpr);
+      // Box
+      roundRect(ctx, x, y, boxW, boxH, corner);
+      ctx.fillStyle = "rgba(17,24,39,0.92)"; ctx.fill();
+      ctx.lineWidth = 2 / (scale * dpr);
+      ctx.strokeStyle = "rgba(51,65,85,1)"; ctx.stroke();
+
+      // Tail
+      const tailW = 12 / (scale*dpr);
       ctx.beginPath();
-      ctx.moveTo(pos.x, headY - 2 / (scale * dpr));
-      ctx.lineTo(pos.x - tailW / 2, y + boxH);
-      ctx.lineTo(pos.x + tailW / 2, y + boxH);
+      ctx.moveTo(p.x, headY - 2/(scale*dpr));
+      ctx.lineTo(p.x - tailW/2, y + boxH);
+      ctx.lineTo(p.x + tailW/2, y + boxH);
       ctx.closePath();
       ctx.fill();
 
+      // Text
       ctx.fillStyle = "#e5e7eb";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(b.text, pos.x, y + boxH / 2);
-
+      ctx.fillText(b.text, p.x, y + boxH/2);
       ctx.restore();
     }
-  }
+  }, 50); // z = 50 (front)
 
   function roundRect(ctx, x, y, w, h, r) {
     const rr = Math.min(r, w/2, h/2);
@@ -124,10 +122,4 @@ export function createTalkSystem() {
     ctx.arcTo(x, y, x + w, y, rr);
     ctx.closePath();
   }
-
-  return {
-    mountUI, setLocalId, bindNetwork,
-    handleKeyDown, update, drawBubbles, clearBubblesFor,
-    receiveSay
-  };
 }
