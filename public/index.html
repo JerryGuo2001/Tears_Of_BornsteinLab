@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <title>Top-Down 3-Player Demo</title>
+  <meta name="theme-color" content="#0b1020" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#0b1020; color:#e5e7eb; font-family:system-ui,sans-serif; }
     #wrap { display:flex; align-items:center; justify-content:center; height:100%; gap:16px; flex-direction:column; }
     #hud { display:flex; gap:12px; align-items:center; }
     #status { opacity:.8 }
-    /* Let JS control sizing for HiDPI crispness */
     canvas {
       background:#0f172a;
       border:2px solid #334155;
@@ -23,7 +23,7 @@
     #overlay {
       position:fixed; inset:0; background:rgba(2,6,23,.9);
       display:flex; align-items:center; justify-content:center;
-      z-index: 1000;
+      z-index:1000;
     }
     #panel {
       background:#0f172a; border:1px solid #334155; border-radius:12px;
@@ -36,7 +36,7 @@
     }
     #startBtn:hover { filter:brightness(1.1); }
 
-    /* Boot/wait overlay (for cold starts) */
+    /* Boot/wait overlay */
     #boot {
       position: fixed; inset: 0; background: rgba(2,6,23,0.96);
       display: flex; align-items: center; justify-content: center;
@@ -53,10 +53,33 @@
       border-radius: 50%; margin: 8px auto 12px auto; animation: spin 1s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Left-side chat menu */
+    #choice {
+      position: fixed;
+      left: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1200;
+      display: none; /* toggled by JS */
+    }
+    #choice .panel {
+      background:#0f172a; border:1px solid #334155; border-radius:12px;
+      padding:14px; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+    }
+    #choice .title { font-weight:600; margin-bottom:8px; }
+    #choice .opt { padding:6px 8px; border-radius:8px; margin-bottom:6px; border:1px solid #1f2937; background:#111827; }
+    #choice .opt:hover { filter:brightness(1.1); }
+    #choice .hint { opacity:.7; font-size:12px; margin-top:6px; }
+    #choice kbd {
+      display:inline-block; min-width:1.4em; text-align:center;
+      padding:2px 6px; border-radius:6px; border:1px solid #374151; background:#0b1220;
+      margin-right:6px; font-size:12px;
+    }
   </style>
 </head>
 <body>
-  <!-- Boot/wait overlay (shows while server wakes up) -->
+  <!-- Boot/wait overlay -->
   <div id="boot">
     <div id="bootPanel">
       <div class="spinner"></div>
@@ -64,23 +87,33 @@
     </div>
   </div>
 
+  <!-- Left-side choice menu -->
+  <div id="choice" aria-live="polite">
+    <div class="panel">
+      <div class="title">Say something</div>
+      <div class="opt"><kbd>1</kbd> <span id="opt1">Hi</span></div>
+      <div class="opt"><kbd>2</kbd> <span id="opt2">Jerry is the best</span></div>
+      <div class="hint">Press <strong>Y</strong> to cancel</div>
+    </div>
+  </div>
+
   <div id="wrap">
     <div id="hud">
-      <div class="pill">WASD or Arrow Keys</div>
+      <div class="pill">WASD or Arrow Keys • Press Y to chat</div>
       <div id="status" class="pill">Connecting…</div>
     </div>
     <canvas id="game" width="800" height="800"></canvas>
   </div>
 
-  <!-- Start overlay (no speed/spawn inputs; server owns params) -->
+  <!-- Start overlay -->
   <div id="overlay">
     <div id="panel">
       <h2>Ready?</h2>
-      <button id="startBtn">Start &amp; Fullscreen</button>
+      <button id="startBtn" aria-label="Start game and enter fullscreen">Start &amp; Fullscreen</button>
     </div>
   </div>
 
-  <!-- Socket.IO client from the server -->
+  <!-- Socket.IO client -->
   <script src="/socket.io/socket.io.js"></script>
   <!-- Game logic -->
   <script type="module" src="./game.js"></script>
