@@ -1,4 +1,4 @@
-// server.js (ESM, chat + movement)
+// server.js (ESM, chat + movement + dance sync)
 import express from "express";
 import http from "node:http";
 import { Server } from "socket.io";
@@ -38,6 +38,7 @@ const GAME = {
 
 const colors  = ["#3b82f6", "#10b981", "#f59e0b"];
 const players = {}; // id -> {x,y,vx,vy,speed,color,name}
+const dancers = new Set(); // ids currently dancing (for new joiners)
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 function liteSnapshot() {
@@ -71,7 +72,8 @@ io.on("connection", (socket) => {
   socket.emit("hello", {
     config: { MAP_SIZE: GAME.MAP_SIZE, PLAYER_RADIUS: GAME.PLAYER_RADIUS },
     youArePlayer: isPlayer,
-    players: liteSnapshot()
+    players: liteSnapshot(),
+    dancers: Array.from(dancers) // <-- send who is dancing now
   });
 
   if (isPlayer) io.emit("joined", { id: socket.id, state: liteSnapshot()[socket.id] });
@@ -88,7 +90,7 @@ io.on("connection", (socket) => {
     p.vx = vx; p.vy = vy;
   });
 
-  // Simple chat: throttle and whitelist
+  // Simple chat: throttle + whitelist
   socket.data.lastSay = 0;
   socket.on("say", (payload) => {
     const now = Date.now();
@@ -98,7 +100,14 @@ io.on("connection", (socket) => {
     let text = (payload && typeof payload.text === "string") ? payload.text.trim() : "";
     if (!SAY_ALLOWED.has(text)) return;
 
-    io.emit("say", { id: socket.id, text }); // broadcast to all (including sender)
+    io.emit("say", { id: socket.id, text }); // broadcast to all
+  });
+
+  // Dance toggle: persist & broadcast so others (and late joiners) see it
+  socket.on("dance", (payload) => {
+    const on = !!(payload && payload.on);
+    if (on) dancers.add(socket.id); else dancers.delete(socket.id);
+    io.emit("dance", { id: socket.id, on });
   });
 
   socket.on("start", () => socket.emit("started", { ok: true }));
@@ -106,6 +115,11 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const wasPlayer = !!players[socket.id];
     delete players[socket.id];
+    // If they were dancing, tell others to turn it off and clear state
+    if (dancers.has(socket.id)) {
+      dancers.delete(socket.id);
+      io.emit("dance", { id: socket.id, on: false });
+    }
     if (wasPlayer) io.emit("left", { id: socket.id });
   });
 });

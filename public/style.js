@@ -1,6 +1,6 @@
 // public/style.js
-// Style + animation with optional sprite sheet.
-// Adds theme.animSpeed and uses continuous phase (no frame resets).
+// Visuals: background draw modes, sprite/blob with gentle bob, ground shadow,
+// animSpeed control, and optional music (for dance mode).
 
 class AssetLoader {
   constructor() { this.cache = new Map(); }
@@ -20,13 +20,31 @@ class AssetLoader {
 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+function drawGroundShadow(ctx, x, y, worldW, intensity = 1) {
+  const rx = worldW * (0.55 + 0.10 * (intensity - 1));
+  const ry = worldW * 0.25;
+  const yOff = worldW * 0.45;
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.32)";
+  ctx.beginPath();
+  if (ctx.ellipse) {
+    ctx.ellipse(x, y + yOff, rx, ry, 0, 0, Math.PI * 2);
+  } else {
+    ctx.translate(x, y + yOff);
+    ctx.scale(rx / (worldW * 0.5), ry / (worldW * 0.5));
+    ctx.arc(0, 0, worldW * 0.5, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.restore();
+}
+
 class AnimatedSheetSprite {
   constructor(img, cfg) {
     this.img = img;
     this.cfg = Object.assign({
       frames: 4,
       fps: 8,
-      rows: { down: 0, left: 1, right: 2, up: 3 },
+      rows: { down:0, left:1, right:2, up:3 },
       frameW: img.width,
       frameH: img.height,
       anchor: "center",
@@ -46,14 +64,12 @@ class AnimatedSheetSprite {
   }
 
   draw(ctx, x, y, worldW, state = {}) {
-    // state: { t, moving, speed, angle, phase }
-    const { frameW, frameH, frames, fps, rows, speedMul } = this.cfg;
+    const { frameW, frameH, frames, rows, speedMul } = this.cfg;
 
-    // Frame index from a continuous phase that the game updates: phase += rate*dt
-    const framePhase = (state.phase ?? 0) * speedMul; // <-- never resets
-    const frame = Math.floor(framePhase) % frames;
+    // Continuous frame index (phase advanced by game)
+    const frame = Math.floor((state.phase ?? 0) * speedMul) % frames;
 
-    // Bob/squash use a gentle time-based phase (not framePhase)
+    // Gentle bob/squash/stretch
     const spd = clamp((state.speed || 0) / 360, 0.6, 1.2);
     const phaseBob = (state.t || 0) * (state.moving ? 4.0 * spd : 1.6) * speedMul;
     const squash   = state.moving ? 1 + 0.03 * Math.sin(phaseBob) : 1 + 0.015 * Math.sin(phaseBob);
@@ -67,8 +83,15 @@ class AnimatedSheetSprite {
     const sx = frame * frameW;
     const sy = rowIdx * frameH;
 
+    const scalePulse = state.danceScale ?? 1;
+
+    // Ground shadow first
+    drawGroundShadow(ctx, x, y, worldW, scalePulse);
+
+    // Sprite
     ctx.save();
     ctx.translate(x, y + (state.moving ? 0 : Math.sin(phaseBob) * 1));
+    ctx.scale(scalePulse, scalePulse);
     ctx.scale(squash, stretch);
     ctx.drawImage(this.img, sx, sy, frameW, frameH, -dw * this.ax, -dh * this.ay, dw, dh);
     ctx.restore();
@@ -86,16 +109,21 @@ class BlobDude {
     const t = state.t || 0;
     const spd = clamp((state.speed || 0) / 360, 0, 1.2);
 
-    // Eyes-only blob. Animation phase is continuous and provided by the game.
     const phaseBob = t * (state.moving ? 3.8 * (1 + spd * 0.5) : 1.6) * this.speedMul;
     const sx = 1 + 0.035 * Math.sin(phaseBob);
     const sy = 1 - 0.035 * Math.sin(phaseBob);
 
-    ctx.save();
-    ctx.translate(x, y + (state.moving ? 0 : Math.sin(phaseBob) * 1));
-    ctx.scale(sx, sy);
+    const scalePulse = state.danceScale ?? 1;
+
+    // Shadow
+    drawGroundShadow(ctx, x, y, worldW, scalePulse);
 
     // Body
+    ctx.save();
+    ctx.translate(x, y + (state.moving ? 0 : Math.sin(phaseBob) * 1));
+    ctx.scale(scalePulse, scalePulse);
+    ctx.scale(sx, sy);
+
     ctx.beginPath();
     ctx.fillStyle = this.color;
     ctx.arc(0, 0, R, 0, Math.PI * 2);
@@ -115,7 +143,7 @@ class BlobDude {
 
 export async function loadStyle(theme) {
   const loader   = new AssetLoader();
-  const speedMul = theme?.animSpeed ?? 2;
+  const speedMul = theme?.animSpeed ?? 1;
 
   // Background
   let bgImg = null;
@@ -123,23 +151,50 @@ export async function loadStyle(theme) {
     try { bgImg = await loader.loadImage(theme.background.src); } catch {}
   }
   const drawBackground = (ctx, mapSize) => {
-    if (bgImg) ctx.drawImage(bgImg, 0, 0, mapSize, mapSize);
+    if (!bgImg) return;
+    const mode = theme?.background?.mode || "stretch";  // "stretch" | "cover" | "contain" | "tile"
+    const pixelated = theme?.background?.pixelated ?? true;
+    const tint = theme?.background?.tint;
+
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    if (pixelated) ctx.imageSmoothingEnabled = false;
+    ctx.save();
+
+    if (mode === "tile") {
+      const pat = ctx.createPattern(bgImg, "repeat");
+      ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, mapSize, mapSize);
+    } else {
+      let dx = 0, dy = 0, dw = mapSize, dh = mapSize;
+      if (mode === "cover" || mode === "contain") {
+        const iw = bgImg.width, ih = bgImg.height;
+        const s = mode === "cover"
+          ? Math.max(mapSize / iw, mapSize / ih)
+          : Math.min(mapSize / iw, mapSize / ih);
+        dw = iw * s; dh = ih * s;
+        dx = (mapSize - dw) / 2;
+        dy = (mapSize - dh) / 2;
+      }
+      ctx.drawImage(bgImg, dx, dy, dw, dh);
+    }
+    if (tint) { ctx.fillStyle = tint; ctx.fillRect(0, 0, mapSize, mapSize); }
+
+    ctx.restore();
+    ctx.imageSmoothingEnabled = prevSmooth;
   };
 
-  // Player art (cache per seat for stability & perf)
+  // Player sprite(s)
   let sheetImg = null;
   let sheetCfg = null;
   if (theme?.player?.sheet?.src) {
     try {
       sheetImg = await loader.loadImage(theme.player.sheet.src);
       sheetCfg = Object.assign({}, theme.player.sheet, { speedMul });
-    } catch {/* fall back */}
+    } catch {}
   }
-  const playerCache = new Map(); // seatIndex -> sprite instance
-
+  const playerCache = new Map();
   const getPlayerSprite = (seatIndex = 0, color = "#3b82f6", radius = 16) => {
     if (playerCache.has(seatIndex)) return playerCache.get(seatIndex);
-
     let sprite;
     if (sheetImg && sheetCfg) {
       sprite = new AnimatedSheetSprite(sheetImg, sheetCfg);
@@ -151,19 +206,35 @@ export async function loadStyle(theme) {
     return sprite;
   };
 
-  // Expose speedMul so the game can advance a continuous phase
-  return { drawBackground, getPlayerSprite, speedMul };
+  // Optional music support for dance mode
+  let music = null;
+  if (theme?.music?.src) {
+    const el = new Audio(theme.music.src);
+    el.loop   = true;
+    el.preload = "auto";
+    el.volume = clamp(theme.music.volume ?? 0.6, 0, 1);
+    const bpm = Math.max(40, Math.min(240, theme.music.bpm ?? 120));
+    const play = async () => { try { await el.play(); } catch {} };
+    const pause = () => { try { el.pause(); } catch {} };
+    const setVolume = (v) => { el.volume = clamp(v, 0, 1); };
+    music = { el, bpm, play, pause, setVolume };
+  }
+
+  return { drawBackground, getPlayerSprite, speedMul, music };
 }
 
-// Default themes
+// Example themes
 export const THEMES = {
-  cuteBlob: {
-    animSpeed: 3, // <1 slower, >1 faster
-    player: { fallbackColor: "#60a5fa" }
+  grass: {
+    animSpeed: 0.8,
+    background: { src: "assets/bg.png", mode: "cover", pixelated: true },
+    music: { src: "assets/dance.mp3", bpm: 120, volume: 0.7 },
+    player: { /* use blob fallback or provide a sheet */ }
   },
   isaacish: {
-    animSpeed: 3,
-    background: { src: "assets/grass.png" }, // optional
+    animSpeed: 0.8,
+    background: { src: "assets/bg.png" },
+    music: { src: "assets/dance.mp3", bpm: 120, volume: 0.7 },
     player: {
       sheet: {
         src: "assets/isaac_sheet.png",

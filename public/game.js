@@ -1,4 +1,6 @@
 import { loadStyle, THEMES } from "./style.js";
+import { createTalkSystem } from "./talk.js";
+import { createDanceSystem } from "./dance.js";
 
 // Elements
 const canvas   = document.getElementById("game");
@@ -11,16 +13,11 @@ const startBtn = document.getElementById("startBtn");
 const boot    = document.getElementById("boot");
 const bootMsg = document.getElementById("bootMsg");
 
-// Chat choice menu (left of screen)
-const choiceEl = document.getElementById("choice");
-const OPT1_TEXT = document.getElementById("opt1")?.textContent || "Hi";
-const OPT2_TEXT = document.getElementById("opt2")?.textContent || "Jerry is the best";
-
 // Focusable canvas
 canvas.tabIndex = 0;
 
 // ----- State -----
-let style = null; // { drawBackground, getPlayerSprite, speedMul }
+let style = null; // { drawBackground, getPlayerSprite, speedMul, music }
 let MAP_SIZE = 800, PLAYER_RADIUS = 16;
 let youArePlayer = false;
 const keys = { up:false, down:false, left:false, right:false };
@@ -28,13 +25,13 @@ const names = {};
 let serverPos = {};  // authoritative snapshot from server
 let renderPos = {};  // smoothed positions for rendering
 
-// Per-player animation state (continuous phase)
-/// anim[id] = { t, lastX, lastY, speed, angle, moving, phase }
+// Per-player animation (render-only)
+// anim[id] = { t, lastX, lastY, speed, angle, moving, phase, danceScale, rateMul }
 const anim = {};
-// Speech bubbles: id -> { text, t0, dur }
-const bubbles = {};
-// Chat menu state
-let chatOpen = false;
+
+// Systems
+const talk  = createTalkSystem();
+const dance = createDanceSystem(() => style?.music);
 
 // HiDPI scaling
 let dpr = window.devicePixelRatio || 1;
@@ -85,6 +82,13 @@ async function connectSocketWithRetry(attempts = 5) {
 }
 
 function bindSocketHandlers() {
+  talk.setLocalId(socket.id);
+  dance.setLocalId(socket.id);
+
+  // Senders for systems
+  talk.bindNetwork({ sendSay: (text) => socket.emit("say", { text }) });
+  dance.bindNetwork({ send:    (on)   => socket.emit("dance", { on }) });
+
   socket.on("connect", () => statusEl.textContent = "Connected. Waiting for players…");
   socket.on("connect_error", (err) => statusEl.textContent = "Connect error: " + err.message);
   socket.on("disconnect", (reason) => statusEl.textContent = "Disconnected: " + reason);
@@ -101,8 +105,14 @@ function bindSocketHandlers() {
       const p = serverPos[id];
       renderPos[id] = { x: p.x, y: p.y, color: p.color, name: p.name };
       names[id] = p.name || "P?";
-      anim[id]  = { t: 0, lastX: p.x, lastY: p.y, speed: 0, angle: 0, moving: false, phase: 0 };
+      anim[id]  = { t: 0, lastX: p.x, lastY: p.y, speed: 0, angle: 0, moving: false, phase: 0, danceScale: 1, rateMul: 1 };
     }
+
+    // Seed known dancers so new joiners see RGB + hear music
+    if (Array.isArray(data.dancers)) {
+      for (const id of data.dancers) dance.setRemote(id, true);
+    }
+
     statusEl.textContent = youArePlayer ? "You are a player." : "Spectating (max 3 players).";
     resizeCanvas();
   });
@@ -111,7 +121,7 @@ function bindSocketHandlers() {
     serverPos[id] = { ...state };
     renderPos[id] = { ...state };
     names[id]     = state.name || "P?";
-    anim[id]      = { t: 0, lastX: state.x, lastY: state.y, speed: 0, angle: 0, moving: false, phase: 0 };
+    anim[id]      = { t: 0, lastX: state.x, lastY: state.y, speed: 0, angle: 0, moving: false, phase: 0, danceScale: 1, rateMul: 1 };
   });
 
   socket.on("left", ({ id }) => {
@@ -119,25 +129,23 @@ function bindSocketHandlers() {
     delete renderPos[id];
     delete names[id];
     delete anim[id];
-    delete bubbles[id];
-  });
-
-  // Receive chat bubble
-  socket.on("say", ({ id, text }) => {
-    addSpeechBubble(id, text);
+    talk.clearBubblesFor(id);
+    // If they were dancing, server will also emit {id,on:false}
   });
 
   socket.on("state", (players) => {
     serverPos = players;
     for (const id in serverPos) if (!names[id]) names[id] = serverPos[id].name || "P?";
   });
+
+  // Chat + dance from server
+  socket.on("say",   ({ id, text }) => talk.receiveSay(id, text));
+  socket.on("dance", ({ id, on })   => dance.setRemote(id, on));
 }
 
 // ==============================
 // Input
 // ==============================
-
-// Movement keys
 function handleMoveKey(e, isDown) {
   let handled = true;
   switch (e.key) {
@@ -152,47 +160,12 @@ function handleMoveKey(e, isDown) {
     if (youArePlayer && socket) socket.emit("move", keys);
   }
 }
-window.addEventListener("keydown", (e) => handleMoveKey(e, true),  { passive:false });
-window.addEventListener("keyup",   (e) => handleMoveKey(e, false), { passive:false });
-
-// Chat hotkeys
-function toggleChat(show) {
-  chatOpen = show;
-  choiceEl.style.display = chatOpen ? "block" : "none";
-}
-function say(text) {
-  if (!socket) return;
-  socket.emit("say", { text });
-  // optimistic bubble for local user
-  if (socket.id) addSpeechBubble(socket.id, text);
-}
-function addSpeechBubble(id, text) {
-  bubbles[id] = { text, t0: performance.now(), dur: 2600 };
-}
-
 window.addEventListener("keydown", (e) => {
-  const k = e.key;
-  // Toggle menu
-  if (k === "y" || k === "Y") {
-    toggleChat(!chatOpen);
-    e.preventDefault();
-    return;
-  }
-  if (!chatOpen) return;
-  // Choose option
-  if (k === "1") {
-    say(OPT1_TEXT);
-    toggleChat(false);
-    e.preventDefault();
-  } else if (k === "2") {
-    say(OPT2_TEXT);
-    toggleChat(false);
-    e.preventDefault();
-  } else if (k === "Escape") {
-    toggleChat(false);
-    e.preventDefault();
-  }
-}, { passive:false });
+  if (e.key === "m" || e.key === "M") { dance.toggle(); e.preventDefault(); return; }
+  if (talk.handleKeyDown(e)) return; // Y, 1, 2
+  handleMoveKey(e, true);
+},  { passive:false });
+window.addEventListener("keyup",   (e) => handleMoveKey(e, false), { passive:false });
 
 // ==============================
 // Start overlay / fullscreen
@@ -215,6 +188,8 @@ startBtn.addEventListener("click", async () => {
   lockScroll(true);
   canvas.focus();
   if (socket) socket.emit("start");
+  // Prime audio here to satisfy autoplay policies
+  dance.primeAudio();
   overlay.style.display = "none";
   resizeCanvas();
 });
@@ -245,29 +220,12 @@ function resizeCanvas() {
 }
 
 // ==============================
-// Drawing
+// Drawing helpers
 // ==============================
 function clearScreen() {
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.setTransform(scale * dpr, 0, 0, scale * dpr, offsetX * dpr, offsetY * dpr);
-}
-
-function drawGrid() {
-  const step = 50;
-  ctx.save();
-  ctx.lineWidth = 1 / (scale * dpr);
-  ctx.strokeStyle = "#1f2937";
-  for (let x = step; x < MAP_SIZE; x += step) {
-    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,MAP_SIZE); ctx.stroke();
-  }
-  for (let y = step; y < MAP_SIZE; y += step) {
-    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(MAP_SIZE,y); ctx.stroke();
-  }
-  ctx.lineWidth = 3 / (scale * dpr);
-  ctx.strokeStyle = "#334155";
-  ctx.strokeRect(1.5,1.5,MAP_SIZE-3,MAP_SIZE-3);
-  ctx.restore();
 }
 
 function drawPlayers() {
@@ -276,14 +234,14 @@ function drawPlayers() {
     const p = renderPos[id];
     const seatIdx = Math.max(0, (parseInt((p.name || "").replace(/\D/g, "") || "1", 10) - 1));
     const sprite  = style?.getPlayerSprite?.(seatIdx, p.color, PLAYER_RADIUS);
-    const state   = anim[id] || { t: 0, moving: false, speed: 0, angle: 0, phase: 0 };
+    const state   = anim[id] || { t: 0, moving: false, speed: 0, angle: 0, phase: 0, danceScale: 1, rateMul: 1 };
 
     const worldW = PLAYER_RADIUS * 2;
     if (sprite?.draw) {
       sprite.draw(ctx, p.x, p.y, worldW, state);
     } else {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, PLAYER_RADIUS, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, PLAYER_RADIUS * (state.danceScale || 1), 0, Math.PI * 2);
       ctx.fillStyle = p.color || "#aaa";
       ctx.fill();
     }
@@ -299,83 +257,21 @@ function drawPlayers() {
   ctx.restore();
 }
 
-function roundRectPath(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, h/2, w/2);
-  ctx.beginPath();
-  ctx.moveTo(x+rr, y);
-  ctx.arcTo(x+w, y,   x+w, y+h, rr);
-  ctx.arcTo(x+w, y+h, x,   y+h, rr);
-  ctx.arcTo(x,   y+h, x,   y,   rr);
-  ctx.arcTo(x,   y,   x+w, y,   rr);
-  ctx.closePath();
-}
-
-function drawBubbles() {
-  const now = performance.now();
-  for (const id in bubbles) {
-    const b = bubbles[id];
-    if (!b) continue;
-    const age = now - b.t0;
-    if (age > b.dur) { delete bubbles[id]; continue; }
-    const p = renderPos[id];
-    if (!p) continue;
-
-    // Text metrics in world units
-    const px = 16 / (scale * dpr);
-    ctx.font = `${px}px system-ui, sans-serif`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-
-    const text = b.text;
-    const m = ctx.measureText(text);
-    const pad = 8 / (scale * dpr);
-    const w = m.width + pad * 2;
-    const h = px + pad * 2;
-
-    const margin = 8 / (scale * dpr);
-    const bx = p.x - w/2;
-    const by = p.y - PLAYER_RADIUS - margin - h;
-
-    // Bubble box
-    ctx.save();
-    ctx.lineWidth = 1 / (scale * dpr);
-    roundRectPath(ctx, bx, by, w, h, 8 / (scale * dpr));
-    ctx.fillStyle = "rgba(17,24,39,0.95)"; // #111827
-    ctx.fill();
-    ctx.strokeStyle = "#334155";
-    ctx.stroke();
-
-    // Tail
-    const tailW = 10 / (scale * dpr);
-    const tailH = 8 / (scale * dpr);
-    ctx.beginPath();
-    ctx.moveTo(p.x - tailW/2, by + h);
-    ctx.lineTo(p.x + tailW/2, by + h);
-    ctx.lineTo(p.x, by + h + tailH);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // Text
-    ctx.fillStyle = "#e5e7eb";
-    ctx.fillText(text, bx + pad, by + h/2);
-
-    ctx.restore();
-  }
-}
-
 // ==============================
-// 60 FPS render with smoothing + continuous phase
+// 60 FPS render loop
 // ==============================
 let lastTs = performance.now();
 function animate(ts) {
   const dt = Math.min(0.05, (ts - lastTs) / 1000);
   lastTs = ts;
 
-  // --- Update animation state from authoritative positions ---
+  dance.onFrame(dt);
+  talk.update(dt);
+
+  // Update per-player anim from authoritative positions
   for (const id in serverPos) {
     const s = serverPos[id];
-    const a = anim[id] || (anim[id] = { t: 0, lastX: s.x, lastY: s.y, speed: 0, angle: 0, moving: false, phase: 0 });
+    const a = anim[id] || (anim[id] = { t: 0, lastX: s.x, lastY: s.y, speed: 0, angle: 0, moving: false, phase: 0, danceScale: 1, rateMul: 1 });
 
     const dx = s.x - a.lastX;
     const dy = s.y - a.lastY;
@@ -386,25 +282,26 @@ function animate(ts) {
     a.moving = spd > 5;
     a.t     += dt;
 
-    // Continuous frame phase (never resets)
     const speedMul = style?.speedMul ?? 1;
     const spdNorm  = Math.max(0.6, Math.min(1.2, spd / 360));
     const baseWalkFps = 8;
     const baseIdleFps = 2.5;
-    const rate = (a.moving ? (baseWalkFps * spdNorm) : baseIdleFps) * speedMul;
+    let rate = (a.moving ? (baseWalkFps * spdNorm) : baseIdleFps) * speedMul;
+
+    a.rateMul    = 1;
+    a.danceScale = 1;
+    dance.applyToAnim(id, a);
+
+    rate *= a.rateMul;
     a.phase += rate * dt;
 
-    a.lastX = s.x;
-    a.lastY = s.y;
+    a.lastX = s.x; a.lastY = s.y;
   }
-  for (const id in anim) {
-    if (!serverPos[id]) delete anim[id];
-  }
+  for (const id in anim) if (!serverPos[id]) delete anim[id];
 
-  // --- Smooth render positions toward server ---
+  // Smooth render positions
   const lambda = 20;
   const k = 1 - Math.exp(-lambda * dt);
-
   for (const id in serverPos) {
     const s = serverPos[id];
     if (!renderPos[id]) renderPos[id] = { x: s.x, y: s.y, color: s.color, name: s.name };
@@ -413,16 +310,23 @@ function animate(ts) {
     r.y += (s.y - r.y) * k;
     r.color = s.color; r.name = s.name;
   }
-  for (const id in renderPos) {
-    if (!serverPos[id]) delete renderPos[id];
-  }
+  for (const id in renderPos) if (!serverPos[id]) delete renderPos[id];
 
-  // --- Draw ---
+  // Draw
   clearScreen();
   if (style?.drawBackground) style.drawBackground(ctx, MAP_SIZE);
-  drawGrid();
   drawPlayers();
-  drawBubbles(); // on top
+
+  // RGB auras for any dancers (local + remote)
+  for (const id in renderPos) {
+    if (!dance.isOnFor(id)) continue;
+    const p = renderPos[id];
+    dance.draw(ctx, id, p.x, p.y);
+  }
+
+  // Speech bubbles on top
+  talk.drawBubbles(ctx, renderPos, PLAYER_RADIUS, scale, dpr);
+
   requestAnimationFrame(animate);
 }
 resizeCanvas();
@@ -435,7 +339,8 @@ requestAnimationFrame(animate);
   boot.classList.remove("hidden");
   bootMsg.textContent = "Waking server…";
 
-  const stylePromise = loadStyle(THEMES.isaacish).catch(() => loadStyle(THEMES.cuteBlob));
+  // Choose your theme (grass has music configured)
+  const stylePromise = loadStyle(THEMES.grass).catch(() => loadStyle(THEMES.isaacish));
 
   await wakeServer(120).catch(()=>{});
 
@@ -443,7 +348,8 @@ requestAnimationFrame(animate);
     await connectSocketWithRetry(5);
     bindSocketHandlers();
 
-    style = await stylePromise;  // includes speedMul
+    style = await stylePromise;
+    talk.mountUI();   // inject left-side panel
 
     boot.classList.add("hidden");
   } catch {
