@@ -1,6 +1,9 @@
 // public/game.js — same-tile visibility + farmer only at center + (everything else as before)
 import { loadStyle, THEMES } from "./style.js";
 
+let phase = "boot";                   // "boot" | "lobby" | "game" | "celebration"
+
+
 const canvas   = document.getElementById("game");
 const ctx      = canvas.getContext("2d");
 const statusEl = document.getElementById("status");
@@ -127,6 +130,10 @@ const GameCore = {
 
   _hello: null,
   getHello(){ return this._hello; },
+
+    // NEW: phase accessors
+  getPhase(){ return phase; },
+  _setPhase(p){ phase = p; },
 };
 window.GameCore = GameCore;
 
@@ -209,6 +216,8 @@ function bindSocketHandlers() {
   });
 
   socket.on("matchStarted", (payload) => {
+    GameCore._setPhase("game"); 
+
     const roles = payload.roles || {};
     myRole = roles[socket.id] || null;
     grid = payload.grid || grid;
@@ -224,6 +233,36 @@ function bindSocketHandlers() {
     applyResources(payload.resources);
 
     overlay.style.display = ""; startBtn.disabled = false;
+  });
+
+  // NEW: celebration mode (1x1 grid; enable talk/dance on client by phase)
+  socket.on("celebrateStart", ({ grid: g, message }) => {
+  alert(message || "You win!");
+
+  GameCore._setPhase("celebration");
+  grid = g || { W:1, H:1, start:{x:0,y:0} };
+  visited = new Set([`${grid.start.x},${grid.start.y}`]);
+
+// everyone’s viewer tile should be the new start so filtering doesn’t hide them
+  explorerTile = { ...grid.start };
+  foragerTile  = { ...grid.start };
+
+  // hide role HUDs during party
+  hudLeader.classList.add("hidden");
+  hudExplorer.classList.add("hidden");
+  hudForager.classList.add("hidden");
+
+  tileCache.clear();
+  drawMinimap();
+  statusEl.textContent = "🎉 Celebration — press M to dance, Y to chat";
+  });
+
+
+  // NEW: loss flow — server will auto-reboot and then emit matchStarted again
+  socket.on("lost", ({ role, message }) => {
+    alert(message || `The ${role} is lost in the wild`);
+    statusEl.textContent = "Rebooting match…";
+    // We just wait; server immediately resets and calls startMatch again when ready.
   });
 
   socket.on("resources", (bundle) => { applyResources(bundle); });
@@ -458,6 +497,7 @@ function drawFarmer(ctx2) {
 
 // Draw resources for current tile
 function drawResources() {
+  if (phase !== "game") return;
   const tile = currentViewerTile();
   const k = `${tile.x},${tile.y}`;
   const points = tileCache.get(k) || [];
@@ -525,6 +565,8 @@ function animate(ts) {
   const dt = Math.min(0.05, (ts - lastTs)/1000);
   lastTs = ts;
 
+ // --- run per-frame plugin logic (dance timers, bubble lifetimes, etc.)
+  for (const cb of frameCbs) { try { cb(dt, GameCore); } catch {} }
   for (const id in serverPos) {
     const s = serverPos[id];
     const a = anim[id] || (anim[id] = { t:0, lastX:s.x, lastY:s.y, speed:0, angle:0, moving:false, phase:0, danceScale:1, rateMul:1 });
@@ -554,7 +596,17 @@ function animate(ts) {
   const t = currentViewerTile();
   if (t.x === grid.start.x && t.y === grid.start.y) drawFarmer(ctx);
 
+// --- draw plugins that want to be BEHIND players (e.g., dance aura z < 0)
+  for (const layer of drawCbs) {
+    if (layer.z < 0) { try { layer.fn(ctx, GameCore); } catch {} }
+  }
+
   drawPlayers();
+
+   // --- draw plugins that want to be ABOVE players (e.g., talk bubbles z >= 0)
+  for (const layer of drawCbs) {
+    if (layer.z >= 0) { try { layer.fn(ctx, GameCore); } catch {} }
+  }
 
   requestAnimationFrame(animate);
 }

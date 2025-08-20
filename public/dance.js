@@ -34,6 +34,8 @@ function init(core){
 
   // Toggle local
   core.onKeyDown((e)=>{
+    if (core.getPhase && core.getPhase() !== "celebration") return;
+
     if (e.key === "m" || e.key === "M") {
       localOn = !localOn;
       if (localOn) {
@@ -69,6 +71,13 @@ function init(core){
 
   // Step time
   core.onFrame((dt)=>{
+
+    if (core.getPhase && core.getPhase() !== "celebration") {
+        localOn = false;
+        dancers.clear();
+        for (const id in core.anim) { core.anim[id].danceScale = 1; core.anim[id].rateMul = 1; }
+        return;
+    }
     if (localOn) localT += dt;
     for (const id of remoteT.keys()) remoteT.set(id, (remoteT.get(id) || 0) + dt);
 
@@ -86,6 +95,7 @@ function init(core){
 
   // Draw aura around every dancing player (above background, below players)
   core.onDraw((ctx, core)=>{
+    if (core.getPhase && core.getPhase() !== "celebration") return; // NEW
     if (dancers.size === 0) return;
     const bpm = core.style?.music?.bpm ?? 120;
 

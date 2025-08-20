@@ -90,27 +90,91 @@ function genGrid() {
   }
   return { W, H, start, tiles };
 }
+// NEW: phases
+const PHASE = { LOBBY: "lobby", GAME: "game", CELEBRATE: "celebration" };
+
+function resetPlayersToStart(room) {
+  for (const id in room.players) {
+    room.players[id].x = 400; room.players[id].y = 400;
+    room.players[id].vx = 0;  room.players[id].vy = 0;
+    room.tilePos[id] = { x: room.grid.start.x, y: room.grid.start.y };
+    io.to(id).emit("tileUpdate", {
+      role: room.players[id].role || null,
+      tile: { ...room.tilePos[id] },
+      visited: Array.from(room.visited),
+    });
+    emitTileDataTo(io.sockets.sockets.get(id), room, room.grid.start.x, room.grid.start.y);
+  }
+}
+
+function rebootRoom(room) {
+  // fresh game state
+  room.grid    = genGrid();
+  room.visited = new Set([tileKey(room.grid.start.x, room.grid.start.y)]);
+  room.labels  = { explorer:{}, forager:{}, leader:{} };
+  room.foragerTarget = null;
+  room.bank    = { gold: GAME.START_GOLD };
+  room.food    = { leader: 0, explorer: 0, forager: 0 };
+  room.carrying= { forager: 0 };
+  room.mapShared = false;
+  room.dancers.clear();
+  for (const id of room.sockets) room.tilePos[id] = { x: room.grid.start.x, y: room.grid.start.y };
+  resetPlayersToStart(room);
+}
+
+function manhattan(a, b) { return Math.abs(a.x - b.x) + Math.abs(a.y - b.y); }
+
+// NEW: check if explorer/forager can still reach base
+function checkLost(room) {
+  if (room.phase !== PHASE.GAME) return;
+
+  const start = room.grid.start;
+  for (const role of ["explorer","forager"]) {
+    const id = Object.keys(room.players).find(pid => room.players[pid].role === role);
+    if (!id) continue;
+    const tile = room.tilePos[id] || start;
+    const stepsNeeded = manhattan(tile, start);
+    const costNeeded  = stepsNeeded * COST.MOVE;
+    const foodNow     = room.food[role];
+
+    if (foodNow < costNeeded) {
+      const msg = `The ${role} is lost in the wild`;
+      io.to(room.code).emit("lost", { role, message: msg });
+
+      // auto reboot & auto start
+      rebootRoom(room);
+      room.phase = PHASE.LOBBY;
+      if (Object.keys(room.players).length === 3) startMatch(room);
+      return;
+    }
+  }
+}
+
+
 
 function makeRoom(code) {
   return {
     code,
-    players: {},        // id -> { x,y,vx,vy,speed,color,name,role,roomCode }
+    players: {},
     sockets: new Set(),
     dancers: new Set(),
     grid: genGrid(),
     visited: new Set([`2,2`]),
     stage: "lobby",
+    phase: PHASE.LOBBY,              // NEW
     roles: {},
     bank: { gold: GAME.START_GOLD },
     food: { leader: 0, explorer: 0, forager: 0 },
     carrying: { forager: 0 },
-    labels: { explorer: {}, forager: {}, leader: {} }, // "x,y" -> 0..3
-    foragerTarget: null, // {x,y}
+    labels: { explorer: {}, forager: {}, leader: {} },
+    foragerTarget: null,
     farmReady: new Set(),
     mapShared: false,
-    tilePos: {},        // id -> {x,y}   <-- NEW
+    tilePos: {},
   };
 }
+
+
 
 function roomOf(socket) {
   const code = socket.data.roomCode;
@@ -143,6 +207,7 @@ function inFarmer(p) {
 }
 
 function startMatch(room) {
+  room.phase = PHASE.GAME; 
   room.stage = "starting";
   const ids = Object.keys(room.players);
   const roles = ["leader", "explorer", "forager"].sort(() => Math.random() - 0.5);
@@ -356,6 +421,8 @@ io.on("connection", (socket) => {
       const leaderId = Object.keys(room.players).find(id => room.players[id].role === "leader");
       if (leaderId) io.to(leaderId).emit("labelsShared", { labels: room.labels.explorer });
     }
+    // NEW: loss check after a move
+    checkLost(room);
   });
 
   // Examine nearest resource (Q) — explorer only
@@ -388,6 +455,7 @@ io.on("connection", (socket) => {
       point: { x: t.points[best].x, y: t.points[best].y, revealed: true, richness: t.points[best].richness, remaining: t.points[best].remaining }
     });
     updateResources(room);
+    checkLost(room);
   });
 
   // Label current tile (any role) — value 0..3
@@ -446,6 +514,7 @@ io.on("connection", (socket) => {
       point: { x: pt.x, y: pt.y, revealed: !!pt.revealed, richness: pt.revealed ? pt.richness : null, remaining: pt.remaining }
     });
     updateResources(room);
+    checkLost(room);
   });
 
   // Deliver carried gold back at base (V)
@@ -459,10 +528,43 @@ io.on("connection", (socket) => {
     if (pos.x !== room.grid.start.x || pos.y !== room.grid.start.y) return;
     if (room.carrying.forager <= 0) return;
 
+    // clear carrying (bookkeeping)
     room.carrying.forager = 0;
-    io.to(room.code).emit("matchEnded", { reason: "Forager delivered resources!" });
     updateResources(room);
-  });
+
+    // === CELEBRATION PHASE: 1×1 grid, talk+dance allowed on client ===
+    room.phase = PHASE.CELEBRATE;
+    room.grid  = { W:1, H:1, start:{x:0, y:0}, tiles: [[{ points: [] }]] };
+    room.visited = new Set([`0,0`]);
+    room.foragerTarget = null;
+
+    // teleport everyone to the 1x1 tile center
+    for (const id in room.players) {
+      room.players[id].x = 400; room.players[id].y = 400;
+      room.players[id].vx = 0;  room.players[id].vy = 0;
+      room.tilePos[id] = { x:0, y:0 };
+    }
+
+    io.to(room.code).emit("celebrateStart", {
+      grid: { W:1, H:1, start:{x:0,y:0} },
+      message: "You win! Celebrate!",
+    });
+
+// Also tell clients the new tile explicitly (helps their viewer-tile state)
+    io.to(room.code).emit("tileUpdate", {
+      role: null, // (client side ignores role here; just refreshes tiles)
+      tile: { x: 0, y: 0 },
+      visited: Array.from(room.visited),
+    });
+
+    // broadcast fresh state (tile + positions)
+    io.to(room.code).emit("state", liteSnapshot(room));
+
+
+      // broadcast fresh state (tile + positions)
+      io.to(room.code).emit("state", liteSnapshot(room));
+    });
+
 
   socket.on("disconnect", () => {
     const room = roomOf(socket);

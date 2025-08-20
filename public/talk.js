@@ -1,7 +1,7 @@
 // public/talk.js
 // Self-registering Talk plugin: press Y to open, 1/2 to speak.
 // Uses server "say" event; shows bubbles for all players.
-
+  // Keyboard
 (function waitForCore(){
   if (window.GameCore?.socket) { init(window.GameCore); }
   else setTimeout(waitForCore, 30);
@@ -15,7 +15,7 @@ function init(core){
     const style = document.createElement("style");
     style.textContent = `
       .talk-panel {
-        position: fixed; left: 16px; top: 50%; transform: translateY(-50%);
+        position: fixed; left: 16px; top: 16px; transform: none;
         width: 230px; background: rgba(10, 15, 25, 0.92); color: #e5e7eb;
         border: 1px solid #334155; border-radius: 12px; padding: 12px;
         font-family: system-ui, sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,.35);
@@ -46,11 +46,15 @@ function init(core){
 
   // Keyboard
   core.onKeyDown((e)=>{
+    // NEW: only in celebration phase
+    if (core.getPhase && core.getPhase() !== "celebration") return;
+
     if (e.key === "y" || e.key === "Y") { toggle(); e.preventDefault(); return true; }
     if (!open) return;
     if (e.key === "1") { core.say("Hi"); close(); e.preventDefault(); return true; }
     if (e.key === "2") { core.say("Jerry is the best"); close(); e.preventDefault(); return true; }
   });
+
 
   // Incoming from server
   core.socket.on("say", ({ id, text }) => { bubbles.push({ id, text, t:0, ttl:2.4 }); });
