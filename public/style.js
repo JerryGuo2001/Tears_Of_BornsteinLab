@@ -163,7 +163,7 @@ export const THEMES = {
   },
   isaacish: {
     animSpeed: 3,
-    background: { src: "assets/bg.png" }, // optional
+    background: { src: "assets/grass.png" }, // optional
     player: {
       sheet: {
         src: "assets/isaac_sheet.png",
